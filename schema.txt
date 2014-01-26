@@ -1,0 +1,177 @@
+http://c-faq.com/decl/namespace.html
+http://www.cprogramming.com/tutorial/const_correctness.html
+http://www.noxeos.com/2011/07/29/c-const-static-keywords/
+http://en.wikipedia.org/wiki/Const-correctness
+http://duramecho.com/ComputerInformation/WhyHowCppConst.html
+
+//standard include guard (assuming a header named net.h)
+#ifndef NET_H
+#define NET_H
+
+//for the program to make headers that are valid in both C and C++, only standard, namespace-poisoning C libraries can be used
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+//all global variables have a prefix (ex. "net_states" for this next line in header net.h), and are static (so they are initially zero-filled)
+//all capitalized values are hardcoded (and their sums, differences, etc., such as in this next line)
+//the states of input units are unused and therefore not tracked
+double states[NUM_UNITS - NUM_INPUTS];
+
+double acts[NUM_UNITS];
+
+//self-connection weights are not tracked, so there are as many weights as the number of eligibility traces (NUM_TRACES below)
+double weights[] = {
+   FIRST_WEIGHT,
+   ...
+};
+
+double traces[NUM_TRACES];
+
+//extended eligibility traces
+double exTraces[NUM_EX_TRACES];
+
+//states cached in fullStep()
+double oldStates[NUM_UNITS - NUM_INPUTS];
+
+//see fullStep() for why there are NUM_TRACES cached activations
+double oldActs[NUM_TRACES];
+
+//fullStep() uses this to cache both self-connection gains and gains for connections with weights/traces
+double oldGains[NUM_UNITS - NUM_INPUTS + NUM_TRACES];
+
+//projected responsibility errors
+double projErrors[NUM_UNITS - NUM_INPUTS - NUM_OUTPUTS];
+
+//(full) responsibility errors (also used to temporarily store gating responsibility errors in learn())
+double respErrors[NUM_UNITS - NUM_INPUTS];
+
+//the input array, target array, and learning rate are owned/controlled by the program using the header (see the set* methods below)
+double *input, *target, *alpha;
+
+double temp, actDeriv;
+int index;
+FILE *file;
+
+//all methods have the same prefix as global variables, but locally scoped function parameters do not need a prefix (ex. "net_save(filename, onlyWeights)")
+//
+void save(char *filename, int onlyWeights){
+   file = fopen(filename, "w");
+   for(index = 0; index < NUM_TRACES;)
+      fprintf(file, "%1.16e", weights[index++]);
+   if(!onlyWeights){
+      for(index = 0; index < NUM_UNITS - NUM_INPUTS;)
+         fprintf(file, "%1.16e", states[index++]);
+      for(index = 0; index < NUM_TRACES;)
+         fprintf(file, "%1.16e", traces[index++]);
+      for(index = 0; index < NUM_EX_TRACES;)
+         fprintf(file, "%1.16e", exTraces[index++]);
+   }
+   fclose(file);
+}
+
+void load(char *filename, int onlyWeights){
+   file = fopen(filename, "r");
+   for(index = 0; index < NUM_TRACES;)
+      fscanf(file, "%le", weights[index++]);
+   if(!onlyWeights){
+      for(index = 0; index < NUM_UNITS - NUM_INPUTS;)
+         fscanf(file, "%le", states[index++]);
+      for(index = 0; index < NUM_TRACES;)
+         fscanf(file, "%le", traces[index++]);
+      for(index = 0; index < NUM_EX_TRACES;)
+         fprintf(file, "%le", exTraces[index++]);//WHY IS THIS THE ONLY PRINTF IN THIS METHOD? (moron)
+      }
+   fclose(file);
+}
+void setInputPtr(double *inputPtr){
+   input = inputPtr;
+}
+double *getOutputPtr(){
+   return acts + NUM_UNITS - NUM_OUTPUTS;
+}
+void setTargetPtr(double *targetPtr){
+   target = targetPtr;
+}
+void setLearnRatePtr(double *alphaPtr){
+   alpha = alphaPtr;
+}
+void fastStep(){
+   memcpy(acts, input, DOUBLE_SIZE * NUM_INPUTS);
+   {
+   states[J] *= GAIN[J, J];
+   {
+   states[J] += GAIN[J, I] * weights[J, I] * acts[I];unless J self-connected and J, I ungated and I < NUM_INPUTS (is bias, so not added)
+   }...
+   acts[J] = 1 / (1 + exp(-states[J]));unless bias I exists (so acts[J] = 1 / (1 + exp(-states[J] - acts[I]));)
+   }...
+}
+void fullStep(){
+   memcpy(acts, input, DOUBLE_SIZE * NUM_INPUTS);
+   memcpy(oldStates, states, DOUBLE_SIZE * (NUM_UNITS - NUM_INPUTS));
+   {
+   oldGains[J] = GAIN[J, J];
+   {
+   oldActs[J, I] = acts[I];
+   oldGains[J, I] = GAIN[J, I];
+   //cache[J, I] = oldGains[J, I] * oldActs[J, I];
+   }...
+   states[J] *= GAIN[J, J];
+   {
+   {
+   states[J] += GAIN[J, I] * weights[J, I] * acts[I];//states[J] += cache[J, I] * weights[J, I];
+   traces[J, I] = oldGains[J] * traces[J, I] + oldGains[J, I] * oldActs[J, I];//traces[J, I] = oldGains[J] * traces[J, I] + cache[J, I];
+   }unless J self-connected and J, I ungated and I < NUM_INPUTS (is bias, so not added, but traces[J, I] = acts[I];)
+   }...
+   acts[J] = 1 / (1 + exp(-states[J]));unless bias I exists (so acts[J] = 1 / (1 + exp(-states[J] - acts[I]));)
+   }...
+   {
+   actDeriv = acts[J] * (1 - acts[J]);
+   {
+   temp = oldStates[K];unless j doesn't gate K, K (so temp = 0;)
+   {
+   temp += weights[K, A] * oldActs[K, A];unless A == K or J doesn't gate K, A (so add nothing)
+   }...
+   }...
+   exTraces[J, I, K] = oldGains[K] * exTraces[J, I, K] + actDeriv * traces[J, I] * temp;
+   }...
+}
+double error(){
+   temp = 0;
+   {
+   temp += target[0] * log(acts[NUM_UNITS - NUM_OUTPUTS]) + (1 - target[0]) * log(1 - acts[NUM_UNITS - NUM_OUTPUTS]);
+   }...
+   return temp;
+}
+void learn(){
+   respErrors[NUM_UNITS - NUM_OUTPUTS] = target[0] - acts[NUM_UNITS - NUM_OUTPUTS];
+   ...
+   projErrors[J] = 0;
+   {
+   projErrors[J] += respErrors[K] * GAIN[K, J] * weights[K, J];unless J >= K (so add nothing)
+   }...
+   respErrors[J] = 0;
+   {
+   temp = states[K];unless j doesn't gate K, K (so temp = 0;)
+   {
+   temp += weights[K, A] * acts[A];unless A == K or J doesn't gate K, A (so add nothing)
+   }...
+   respErrors[J] += respErrors[K] * temp;unless J >= K or J doesn't gate a connection into K (so add nothing)
+   }...
+   actDeriv = acts[J] * (1 - acts[J]);
+   projErrors[J] *= actDeriv;
+   respErrors[J] = projErrors[J] + actDeriv * respErrors[J];
+   {
+   temp = projErrors[J] * traces[J, I];
+   {
+   temp += respErrors[K] * exTraces[J, I, K];
+   }...
+   weights[J, I] += *alpha * temp;
+   }...
+   {
+   weights[J, I] += *alpha * respErrors[J] * traces[J, I];
+   }...
+}
+
+//part of include guard
+#endif
